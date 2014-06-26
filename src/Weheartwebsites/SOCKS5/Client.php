@@ -1,9 +1,9 @@
 <?php
 
 /**
- * This file is part of the php-epp2 library.
+ * This file is part of the SOCKS5 library.
  *
- * (c) Gunter Grodotzki <gunter@weheartwebsites>
+ * (c) Gunter Grodotzki <guenter@weheartwebsites>
  *
  * For the full copyright and license information, please view the LICENSE file
  * that was distributed with this source code.
@@ -19,7 +19,16 @@ use Exception;
  */
 class Client
 {
-    const SOCKS_VERSION = 0x05;
+    const PROTOCOL_VERSION  = 0x05;
+
+    const RESERVED          = 0x00;
+    const CMD_CONNECT       = 0x01;
+    const CMD_BIND          = 0x02;
+    const CMD_UDP_ASSOC     = 0x03;
+    const ATYP_IPV4         = 0x01;
+    const ATYP_DOMAINNAME   = 0x03;
+    const ATYP_IPV6         = 0x04;
+    const REPLY_SUCCESS     = 0x00;
 
     public $socket;
 
@@ -27,7 +36,7 @@ class Client
 
     protected $proxy_port;
 
-    protected $methods = [];
+    protected $methods;
 
     protected $outgoing_interface;
 
@@ -37,6 +46,18 @@ class Client
 
     protected $tunnel_dns;
 
+    protected $replies = [
+        0x00 => 'succeeded',
+        0x01 => 'general SOCKS server failure',
+        0x02 => 'connection not allowed by ruleset',
+        0x03 => 'Network unreachable',
+        0x04 => 'Host unreachable',
+        0x05 => 'Connection refused',
+        0x06 => 'TTL expired',
+        0x07 => 'Command not supported',
+        0x08 => 'Address type not supported',
+    ];
+
     public function __construct($proxy_server, $proxy_port = 1080)
     {
         $this->proxy_server = (string) $proxy_server;
@@ -44,6 +65,8 @@ class Client
 
         // set defaults
         $this->connect_timeout = $this->timeout = ini_get('default_socket_timeout');
+        $this->tunnel_dns = false;
+        $this->method = [];
     }
 
     public function __destruct()
@@ -51,6 +74,10 @@ class Client
         $this->close();
     }
 
+    /**
+     * Add authentication method to pool
+     * @param Method $method
+     */
     public function addMethod(Method $method)
     {
         $this->methods[$method->getId()] = $method;
@@ -151,21 +178,21 @@ class Client
     public function connectTo($host, $port)
     {
         if (!is_resource($this->socket)) {
-            throw new Exception('connectTO(): dead socket');
+            throw new Exception('connectTo(): dead socket');
         }
 
         $host = (string) $host;
         $port = (int) $port;
 
         if ($this->tunnel_dns) {
-            $connect_string = pack('C5', self::SOCKS_VERSION, 0x01, 0x00, 0x03, mb_strlen($host, 'ASCII')) . $host . pack('n', $port);
+            $connect_string = pack('C5', self::PROTOCOL_VERSION, self::CMD_CONNECT, self::RESERVED, self::ATYP_DOMAINNAME, mb_strlen($host, 'ASCII')) . $host . pack('n', $port);
         } else {
             // resolve host
             $host_addr = gethostbyname($host);
             if ($host_addr === false || $host_addr === $host) {
                 throw new Exception(sprintf('connectTo(): unable to resolve %s', $host));
             }
-            $connect_string = pack('C4Nn', self::SOCKS_VERSION, 0x01, 0x00, 0x01, ip2long($host_addr), $port);
+            $connect_string = pack('C4Nn', self::PROTOCOL_VERSION, self::CMD_CONNECT, self::RESERVED, self::ATYP_IPV4, ip2long($host_addr), $port);
         }
 
         if ($this->send($connect_string) !== true) {
@@ -175,10 +202,21 @@ class Client
         // currently will only work with IPv4 replies, ipv6 is trivial but domain-name is not...
         $buffer = $this->recv(10);
 
-        $response = unpack('Cversion/Cresult/Creg/Ctype/Lip/Sport', $buffer);
+        $response = unpack('Cver/Crep/Crsv/Catyp/Laddr/Sport', $buffer);
 
-        if (!isset($response['version'], $response['result']) || $response['version'] !== self::SOCKS_VERSION || $response['result'] !== 0x00) {
-            throw new Exception(sprintf('connectTo(): connection failed (%s:%d)', $host, $port));
+        if (!isset($response['ver'], $response['rep'])) {
+            throw new Exception('connectTo(): unable to parse response');
+        }
+
+        if ($response['ver'] !== self::PROTOCOL_VERSION) {
+            throw new Exception('connectTo(): version mismatch');
+        }
+
+        if ($response['rep'] !== self::REPLY_SUCCESS) {
+            if (isset($this->replies[$response['rep']])) {
+                throw new Exception('connectTo(): ' . $this->replies[$response['rep']]);
+            }
+            throw new Exception(sprintf('connectTo(): unknown error (%d)', $response['rep']));
         }
 
         return true;
@@ -240,9 +278,9 @@ class Client
 
         if ($pos !== $length) {
             throw new Exception('send(): writing short %d bytes', $length - $pos);
-        } else {
-            return true;
         }
+
+        return true;
     }
 
     public function recv($length)
@@ -302,7 +340,7 @@ class Client
         $context = stream_context_create();
 
         if (!stream_context_set_option($context, 'socket', 'bindto', sprintf('%s:%d', $this->outgoing_interface, 0))) {
-            throw new Exception(sprintf('there was an error binding to: %s', $this->outgoing_interface));
+            throw new Exception(sprintf('createContext(): there was an error binding to: %s', $this->outgoing_interface));
         }
 
         return $context;
@@ -322,7 +360,7 @@ class Client
             throw new Exception('negiotiate(): at least one method must be given');
         }
 
-        $neg_string  = pack('C', self::SOCKS_VERSION); // version
+        $neg_string  = pack('C', self::PROTOCOL_VERSION); // version
         $neg_string .= pack('C', count($this->methods)); // number of methods
         foreach ($this->methods as $method) {
             $neg_string .= pack('C', $method->getId());
@@ -334,14 +372,14 @@ class Client
 
         // https://bugzilla.mindrot.org/show_bug.cgi?id=2250
 
-        $response = unpack('Cversion/Cmethod', $this->recv(2));
+        $response = unpack('Cver/Cmethod', $this->recv(2));
 
-        if (!isset($response['version'], $response['method'])) {
+        if (!isset($response['ver'], $response['method'])) {
             throw new Exception('negotiate(): unable to get response');
         }
 
-        if ($response['version'] !== self::SOCKS_VERSION) {
-            throw new Exception(sprintf('negotiate(): server version (%d) unsupported', $response['version']));
+        if ($response['ver'] !== self::PROTOCOL_VERSION) {
+            throw new Exception(sprintf('negotiate(): version mismatch (%d)', $response['ver']));
         }
 
         if ($response['method'] === 0xFF) {
@@ -353,6 +391,6 @@ class Client
         }
 
         // run login
-        return $this->methods[$response['method']]->run($this);
+        return $this->methods[$response['method']]->authenticate($this);
     }
 }
