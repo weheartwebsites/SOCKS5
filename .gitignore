@@ -1,4 +1,13 @@
-# Eclipse + PDT
+# OSX specific
+.DS_Store
+
+# Ignore-IDE: Eclipse/ZendStudio
 /.settings/
 /.buildpath
 /.project
+
+# composer
+/vendor
+
+# app
+/scripts/cron.sh
