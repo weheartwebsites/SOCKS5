@@ -1,0 +1,24 @@
+{
+    "name": "weheartwebsites/socks5",
+    "type": "library",
+    "description": "A simple SOCKS5 tcp client",
+    "keywords": ["proxy", "socks5", "net", "client", "tcp"],
+    "homepage": "https://github.com/weheartwebsites/SOCKS5",
+    "license": "GPL-3.0+",
+    "authors": [
+        {
+            "name": "Gunter Grodotzki",
+            "email": "packagist@weheartwebsites.de",
+            "homepage": "https://www.weheartwebsites.de",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": ">=5.4.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Weheartwebsites\\": "src/Weheartwebsites"
+        }
+    }
+}
